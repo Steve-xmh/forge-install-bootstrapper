@@ -32,33 +32,27 @@ public class ForgeInstaller {
 
     Field processorField = Class.forName("net.minecraftforge.installer.json.Install").getDeclaredField("processors");
     processorField.setAccessible(true);
-    List<Install.Processor> processors = (List<Install.Processor>) processorField.get(install);
+    @SuppressWarnings("unchecked") List<Install.Processor> processors = (List<Install.Processor>) processorField.get(install);
     List<Install.Processor> target = processors.stream().filter((processor -> {
-      String[] processorArgs = processor.getArgs();
-      return Arrays.asList(processorArgs).contains("DOWNLOAD_MOJMAPS");
-    }))
-      .collect(Collectors.toList());
+              String[] processorArgs = processor.getArgs();
+              return Arrays.asList(processorArgs).contains("DOWNLOAD_MOJMAPS");
+            }))
+            .collect(Collectors.toList());
     processors.removeAll(target);
 
-    Mirror mirror = new Gson().fromJson(new StringReader(
-      "{\n" +
-        "    \"name\": \"bmclapi\",\n" +
-        "    \"url\": \"http://bmclapi.bangbang93.com/maven/\"\n" +
-        "}"
-    ), Mirror.class);
-    Field mirrorField = Class.forName("net.minecraftforge.installer.json.Install").getDeclaredField("mirror");
-    mirrorField.setAccessible(true);
-    mirrorField.set(install, mirror);
+    Mirror mirror = getMirror(args[1]);
+    if (mirror != null) {
+      Field mirrorField = Class.forName("net.minecraftforge.installer.json.Install").getDeclaredField("mirror");
+      mirrorField.setAccessible(true);
+      mirrorField.set(install, mirror);
+    }
 
     ProgressCallback monitor = ProgressCallback.withOutputs(System.out);
     String path;
-    if (args.length == 0) {
-      path = ".";
-    } else {
-      path = args[0];
-    }
+    path = args[0];
+
     ClientInstall action = (ClientInstall) Class.forName("net.minecraftforge.installer.actions.ClientInstall")
-      .getConstructor(installerClass, ProgressCallback.class).newInstance(install, monitor);
+            .getConstructor(installerClass, ProgressCallback.class).newInstance(install, monitor);
     Method[] methods = ClientInstall.class.getMethods();
     Predicate<String> optionals = (a) -> true;
     Object result = null;
@@ -73,5 +67,25 @@ public class ForgeInstaller {
       }
     }
     monitor.message(result != null ? result.toString() : null);
+  }
+
+  private static Mirror getMirror(String mirrorSource) {
+    switch (mirrorSource) {
+      case "bmclapi":
+        return new Gson().fromJson(new StringReader(
+                "{" +
+                        "\"name\":\"bmclapi\"," +
+                        "\"url\":\"http://bmclapi.bangbang93.com/maven/\"" +
+                        "}"
+        ), Mirror.class);
+      case "mcbbs":
+        return new Gson().fromJson(new StringReader(
+                "{" +
+                        "\"name\":\"mcbbs\"," +
+                        "\"url\":\"http://download.mcbbs.net/maven/\"" +
+                        "}"
+        ), Mirror.class);
+    }
+    return null;
   }
 }

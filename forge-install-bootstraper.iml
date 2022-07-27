@@ -7,7 +7,7 @@
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
-    <orderEntry type="library" name="forge-1.17.1-37.0.2-installer" level="project" />
+    <orderEntry type="library" name="forge-1.19-41.1.0-installer" level="project" />
     <orderEntry type="library" name="installertools-1.2.7" level="project" />
   </component>
 </module>
