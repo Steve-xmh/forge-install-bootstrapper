@@ -1,91 +1,122 @@
 package com.bangbang93;
 
-import com.google.gson.Gson;
-import net.minecraftforge.installer.SimpleInstaller;
-import net.minecraftforge.installer.actions.ClientInstall;
-import net.minecraftforge.installer.actions.ProgressCallback;
-import net.minecraftforge.installer.json.Install;
-import net.minecraftforge.installer.json.Mirror;
-import net.minecraftforge.installer.json.Util;
-
 import java.io.File;
-import java.io.StringReader;
+import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.Arrays;
-import java.util.List;
+import java.lang.reflect.Proxy;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
 
 public class ForgeInstaller {
+
+  /**
+   * 主程序函数
+   *
+   * @param args 参数，分别是 .minecraft 目录、版本名称、镜像源
+   */
   public static void main(String[] args) throws ClassNotFoundException, NoSuchMethodException,
-    InvocationTargetException, InstantiationException, IllegalAccessException, NoSuchFieldException {
-    SimpleInstaller.headless = true;
-    Class<?> installerClass;
-    try {
-     installerClass = Class.forName("net.minecraftforge.installer.json.InstallV1");
-    } catch (ClassNotFoundException e) {
-        installerClass = Class.forName("net.minecraftforge.installer.json.Install");
-    }
-    Object install = Util.class.getDeclaredMethod("loadInstallProfile").invoke(Util.class);
+          InvocationTargetException, InstantiationException, IllegalAccessException, NoSuchFieldException {
 
-    Field processorField = Class.forName("net.minecraftforge.installer.json.Install").getDeclaredField("processors");
-    processorField.setAccessible(true);
-    @SuppressWarnings("unchecked") List<Install.Processor> processors = (List<Install.Processor>) processorField.get(install);
-    List<Install.Processor> target = processors.stream().filter((processor -> {
-              String[] processorArgs = processor.getArgs();
-              return Arrays.asList(processorArgs).contains("DOWNLOAD_MOJMAPS");
-            }))
-            .collect(Collectors.toList());
-    processors.removeAll(target);
+    String path = args[0];
 
-    Mirror mirror = getMirror(args[1]);
-    if (mirror != null) {
-      Field mirrorField = Class.forName("net.minecraftforge.installer.json.Install").getDeclaredField("mirror");
-      mirrorField.setAccessible(true);
-      mirrorField.set(install, mirror);
+    Object action = preprocessInstaller();
+
+    Method[] methods = action.getClass().getMethods();
+
+    // 旧版安装器会使用 com.google.common.base.Predicate<String>
+    // 而新版本会直接使用 java.util.function.Predicate<String>
+    Object optionals = (Predicate<String>) (s) -> true;
+
+    Class<?> predicateClass = tryGetClass("com.google.common.base.Predicate");
+    if (predicateClass != null) {
+      optionals = Proxy.newProxyInstance(predicateClass.getClassLoader(), new Class<?>[]{predicateClass}, (proxy, method, args0) -> {
+        if (method.getName().equals("apply")) {
+          return true;
+        }
+        return method.invoke(proxy, args0);
+      });
     }
 
-    ProgressCallback monitor = ProgressCallback.withOutputs(System.out);
-    String path;
-    path = args[0];
-
-    ClientInstall action = (ClientInstall) Class.forName("net.minecraftforge.installer.actions.ClientInstall")
-            .getConstructor(installerClass, ProgressCallback.class).newInstance(install, monitor);
-    Method[] methods = ClientInstall.class.getMethods();
-    Predicate<String> optionals = (a) -> true;
     Object result = null;
+    File minecraftPath = new File(path);
     for (Method method : methods) {
       if (method.getName().equals("run")) {
         if (method.getParameters().length == 2) {
-          result = method.invoke(action, new File(path), optionals);
+          result = method.invoke(action, minecraftPath, optionals);
         } else {
-          String p = SimpleInstaller.class.getProtectionDomain().getCodeSource().getLocation().getPath();
-          result = method.invoke(action, new File(path), optionals, new File(p));
+          Class<?> simpleInstallerClass = tryGetClass("net.minecraftforge.installer.SimpleInstaller");
+          assert simpleInstallerClass != null;
+          String p = simpleInstallerClass.getProtectionDomain().getCodeSource().getLocation().getPath();
+          result = method.invoke(action, minecraftPath, optionals, new File(p));
         }
       }
     }
-    monitor.message(result != null ? result.toString() : null);
+    System.out.println(result != null ? result.toString() : null);
   }
 
-  private static Mirror getMirror(String mirrorSource) {
-    switch (mirrorSource) {
-      case "bmclapi":
-        return new Gson().fromJson(new StringReader(
-                "{" +
-                        "\"name\":\"bmclapi\"," +
-                        "\"url\":\"http://bmclapi.bangbang93.com/maven/\"" +
-                        "}"
-        ), Mirror.class);
-      case "mcbbs":
-        return new Gson().fromJson(new StringReader(
-                "{" +
-                        "\"name\":\"mcbbs\"," +
-                        "\"url\":\"http://download.mcbbs.net/maven/\"" +
-                        "}"
-        ), Mirror.class);
+  /**
+   * 预处理安装器元数据，例如设定安装版本名称，设置下载镜像源
+   *
+   * @return 返回一个 ClientInstall 类，用于下一步安装操作
+   */
+  private static Object preprocessInstaller() throws NoSuchMethodException, InvocationTargetException, IllegalAccessException, ClassNotFoundException, InstantiationException {
+    Class<?> simpleInstallerClass = Class.forName("net.minecraftforge.installer.SimpleInstaller");
+    try {
+      Field headlessField = simpleInstallerClass.getDeclaredField("headless");
+      headlessField.set(simpleInstallerClass, true);
+    } catch (NoSuchFieldException e) {
+      // 没有就不设置了
     }
-    return null;
+
+    Class<?> installerClass = tryGetClass("net.minecraftforge.installer.json.InstallV1");
+    if (installerClass == null) {
+      installerClass = tryGetClass("net.minecraftforge.installer.json.Install");
+    }
+
+    Class<?> progressCallbackClass = tryGetClass("net.minecraftforge.installer.actions.ProgressCallback");
+
+    Object install = null;
+    Object monitor = null;
+
+    Class<?> utilClass = tryGetClass("net.minecraftforge.installer.json.Util");
+    if (utilClass != null) {
+      try {
+        Method loadInstallProfileMethod = utilClass.getDeclaredMethod("loadInstallProfile");
+        install = loadInstallProfileMethod.invoke(utilClass);
+      } catch (NoSuchMethodException ignored) {
+
+      }
+    }
+    if (progressCallbackClass != null) {
+      for (Method method : progressCallbackClass.getMethods()) {
+        if (method.getName().equals("withOutputs")) {
+          OutputStream[] arg = new OutputStream[1];
+          arg[0] = System.out;
+          monitor = method.invoke(progressCallbackClass, (Object) arg);
+        }
+      }
+    }
+
+    try {
+      try {
+        return Class.forName("net.minecraftforge.installer.actions.ClientInstall")
+                .getConstructor(installerClass, progressCallbackClass).newInstance(install, monitor);
+      } catch (IllegalArgumentException e) {
+        return Class.forName("net.minecraftforge.installer.actions.ClientInstall")
+                .getConstructor(installerClass, progressCallbackClass).newInstance(install, monitor);
+      }
+    } catch (ClassNotFoundException e) {
+      return Class.forName("net.minecraftforge.installer.ClientInstall")
+              .getConstructor().newInstance();
+    }
+  }
+
+  private static Class<?> tryGetClass(String className) {
+    try {
+      return Class.forName(className);
+    } catch (ClassNotFoundException e) {
+      return null;
+    }
   }
 }
